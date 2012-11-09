@@ -106,7 +106,6 @@ RKlcl_log(RKLogComponent, RKlcl_vTrace, @"" __VA_ARGS__)
     RKLogConfigureByName("RestKit/ObjectMapping", RKLogLevelCritical);
  */
 #define RKLogConfigureByName(name, level)                                               \
-RKLogInitialize();                                                                      \
 RKlcl_configure_by_name(name, level);
 
 /**
@@ -115,7 +114,6 @@ RKlcl_configure_by_name(name, level);
  their apps.
  */
 #define RKLogSetAppLoggingLevel(level)                                                  \
-RKLogInitialize();                                                                      \
 RKlcl_configure_by_name("App", level);
 
 /**
@@ -179,18 +177,13 @@ RKlcl_configure_by_name("App", level);
 #endif
 
 /**
- Initialize the logging environment
- */
-void RKLogInitialize(void);
-
-/**
  Configure RestKit logging from environment variables.
  (Use Option + Command + R to set Environment Variables prior to run.)
 
  For example to configure the equivalent of setting the following in code:
  RKLogConfigureByName("RestKit/Network", RKLogLevelTrace);
 
- Define an environment variable named RKLogLevel.RestKit.Network and set its value to "Trace"
+ Define an environment variable named 'RKLogLevel.RestKit.Network' and set its value to "Trace"
 
  See lcl_config_components_RK.h for configurable RestKit logging components.
 

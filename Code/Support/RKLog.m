@@ -18,22 +18,25 @@
 //  limitations under the License.
 //
 
+#import <CoreData/CoreDataErrors.h>
 #import "RKLog.h"
 
-int RKLogLevelForString(NSString *, NSString *);
+// Hook into Objective-C runtime to configure logging when we are loaded
+@interface RKLogInitializer : NSObject
+@end
 
-static BOOL loggingInitialized = NO;
+@implementation RKLogInitializer
 
-void RKLogInitialize(void)
++ (void)load
 {
-    if (loggingInitialized == NO) {
-        RKlcl_configure_by_name("RestKit*", RKLogLevelDefault);
-        RKlcl_configure_by_name("App", RKLogLevelDefault);
-        RKLogInfo(@"RestKit initialized...");
-        loggingInitialized = YES;
-    }
+    RKlcl_configure_by_name("RestKit*", RKLogLevelDefault);
+    RKlcl_configure_by_name("App", RKLogLevelDefault);
+    RKLogInfo(@"RestKit logging initialized...");
 }
 
+@end
+
+int RKLogLevelForString(NSString *, NSString *);
 
 void RKLogConfigureFromEnvironment(void)
 {
@@ -116,25 +119,25 @@ void RKLogValidationError(NSError *error)
             for (NSError *detailedError in errors) {
                 NSDictionary *subUserInfo = [detailedError userInfo];
                 RKLogError(@"Detailed Error\n \
-                           NSLocalizedDescription:\t\t%@\n \
-                           NSValidationErrorKey:\t\t\t%@\n \
-                           NSValidationErrorPredicate:\t%@\n \
-                           NSValidationErrorObject:\n%@\n",
-                           [subUserInfo valueForKey:@"NSLocalizedDescription"],
-                           [subUserInfo valueForKey:@"NSValidationErrorKey"],
-                           [subUserInfo valueForKey:@"NSValidationErrorPredicate"],
-                           [subUserInfo valueForKey:@"NSValidationErrorObject"]);
+                           NSLocalizedDescriptionKey:\t\t%@\n \
+                           NSValidationKeyErrorKey:\t\t\t%@\n \
+                           NSValidationPredicateErrorKey:\t%@\n \
+                           NSValidationObjectErrorKey:\n%@\n",
+                           [subUserInfo valueForKey:NSLocalizedDescriptionKey],
+                           [subUserInfo valueForKey:NSValidationKeyErrorKey],
+                           [subUserInfo valueForKey:NSValidationPredicateErrorKey],
+                           [subUserInfo valueForKey:NSValidationObjectErrorKey]);
             }
         } else {
             RKLogError(@"Validation Error\n \
-                       NSLocalizedDescription:\t\t%@\n \
-                       NSValidationErrorKey:\t\t\t%@\n \
-                       NSValidationErrorPredicate:\t%@\n \
-                       NSValidationErrorObject:\n%@\n",
-                       [userInfo valueForKey:@"NSLocalizedDescription"],
-                       [userInfo valueForKey:@"NSValidationErrorKey"],
-                       [userInfo valueForKey:@"NSValidationErrorPredicate"],
-                       [userInfo valueForKey:@"NSValidationErrorObject"]);
+                       NSLocalizedDescriptionKey:\t\t%@\n \
+                       NSValidationKeyErrorKey:\t\t\t%@\n \
+                       NSValidationPredicateErrorKey:\t%@\n \
+                       NSValidationObjectErrorKey:\n%@\n",
+                       [userInfo valueForKey:NSLocalizedDescriptionKey],
+                       [userInfo valueForKey:NSValidationKeyErrorKey],
+                       [userInfo valueForKey:NSValidationPredicateErrorKey],
+                       [userInfo valueForKey:NSValidationObjectErrorKey]);
         }
     }
 }

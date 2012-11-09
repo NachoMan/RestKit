@@ -269,7 +269,8 @@
     RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
     id userInfo = [RKTestFixture parsedObjectWithContentsOfFixture:@"user.json"];
     RKMapperOperation *mapper = [[RKMapperOperation alloc] initWithObject:userInfo mappingsDictionary:@{[NSNull null] : mapping}];
-    mapper.targetObject = [NSDictionary new];
+    NSDictionary *dictionary = [NSDictionary new];
+    mapper.targetObject = dictionary;
     [mapper start];
     assertThat(mapper.error, is(notNilValue()));
     // TODO: Better check on the error type...
@@ -1267,6 +1268,24 @@
     NSError *error = nil;
     [operation performMapping:&error];
     assertThat(user.name, is(equalTo(@"Blake Watters")));
+}
+
+- (void)testMappingToAnNSDataAttributeUsingKeyedArchiver
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
+    RKAttributeMapping *attributeMapping = [RKAttributeMapping attributeMappingFromKeyPath:@"arrayOfStrings" toKeyPath:@"data"];
+    [mapping addPropertyMapping:attributeMapping];
+    
+    NSDictionary *dictionary = @{ @"arrayOfStrings": @[ @"one", @"two", @"three" ] };
+    RKTestUser *user = [RKTestUser user];
+    RKMappingOperation *operation = [[RKMappingOperation alloc] initWithSourceObject:dictionary destinationObject:user mapping:mapping];
+    NSError *error = nil;
+    BOOL success = [operation performMapping:&error];
+    expect(success).to.equal(YES);
+    expect(user.data).notTo.beNil();
+    NSDictionary *decodedDictionary = [NSKeyedUnarchiver unarchiveObjectWithData:user.data];
+    NSArray *expectedValue = @[ @"one", @"two", @"three" ];
+    expect(decodedDictionary).to.equal(expectedValue);
 }
 
 #pragma mark - Relationship Mapping

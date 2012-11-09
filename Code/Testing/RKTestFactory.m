@@ -25,12 +25,19 @@
 #import "RKPathUtilities.h"
 #import "RKMIMETypeSerialization.h"
 
+// Expose MIME Type singleton and initialization routine
+@interface RKMIMETypeSerialization ()
++ (RKMIMETypeSerialization *)sharedSerialization;
+- (void)addRegistrationsForKnownSerializations;
+@end
+
 @interface RKTestFactory ()
 
 @property (nonatomic, strong) NSURL *baseURL;
-@property (nonatomic, strong) NSString *managedObjectStoreFilename;
 @property (nonatomic, strong) NSMutableDictionary *factoryBlocks;
 @property (nonatomic, strong) NSMutableDictionary *sharedObjectsByFactoryName;
+@property (nonatomic, copy) void (^setUpBlock)();
+@property (nonatomic, copy) void (^tearDownBlock)();
 
 + (RKTestFactory *)sharedFactory;
 - (void)defineFactory:(NSString *)factoryName withBlock:(id (^)())block;
@@ -39,29 +46,17 @@
 
 @end
 
-// Expose MIME Type singleton and initialization routine
-@interface RKMIMETypeSerialization ()
-+ (RKMIMETypeSerialization *)sharedSerialization;
-- (void)addRegistrationsForKnownSerializations;
-@end
-
-static RKTestFactory *sharedFactory = nil;
-
 @implementation RKTestFactory
-
 
 + (void)initialize
 {
     // Ensure the shared factory is initialized
     [self sharedFactory];
-
-    if ([RKTestFactory respondsToSelector:@selector(didInitialize)]) {
-        [RKTestFactory didInitialize];
-    }
 }
 
 + (RKTestFactory *)sharedFactory
 {
+    static RKTestFactory *sharedFactory = nil;
     if (! sharedFactory) {
         sharedFactory = [RKTestFactory new];
     }
@@ -74,7 +69,6 @@ static RKTestFactory *sharedFactory = nil;
     self = [super init];
     if (self) {
         self.baseURL = [NSURL URLWithString:@"http://127.0.0.1:4567"];
-        self.managedObjectStoreFilename = RKTestFactoryDefaultStoreFilename;
         self.factoryBlocks = [NSMutableDictionary new];
         self.sharedObjectsByFactoryName = [NSMutableDictionary new];
         [self defineDefaultFactories];
@@ -156,26 +150,6 @@ static RKTestFactory *sharedFactory = nil;
     [RKTestFactory sharedFactory].baseURL = URL;
 }
 
-+ (NSString *)baseURLString
-{
-    return [[[RKTestFactory sharedFactory] baseURL] absoluteString];
-}
-
-+ (void)setBaseURLString:(NSString *)baseURLString
-{
-    [[RKTestFactory sharedFactory] setBaseURL:[NSURL URLWithString:baseURLString]];
-}
-
-+ (NSString *)managedObjectStoreFilename
-{
-   return [RKTestFactory sharedFactory].managedObjectStoreFilename;
-}
-
-+ (void)setManagedObjectStoreFilename:(NSString *)managedObjectStoreFilename
-{
-    [RKTestFactory sharedFactory].managedObjectStoreFilename = managedObjectStoreFilename;
-}
-
 + (void)defineFactory:(NSString *)factoryName withBlock:(id (^)())block
 {
     [[RKTestFactory sharedFactory] defineFactory:factoryName withBlock:block];
@@ -236,8 +210,24 @@ static RKTestFactory *sharedFactory = nil;
     return [self sharedObjectFromFactory:RKTestFactoryDefaultNamesManagedObjectStore];
 }
 
++ (void)setSetupBlock:(void (^)())block
+{
+    [RKTestFactory sharedFactory].setUpBlock = block;
+}
+
++ (void)setTearDownBlock:(void (^)())block
+{
+    [RKTestFactory sharedFactory].tearDownBlock = block;
+}
+
 + (void)setUp
 {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // On initial set up, perform a tear down to clear any state from the application launch
+        [self tearDown];
+    });
+
     [[RKTestFactory sharedFactory].sharedObjectsByFactoryName removeAllObjects];
     [RKObjectManager setSharedManager:nil];
     [RKManagedObjectStore setDefaultStore:nil];
@@ -254,9 +244,7 @@ static RKTestFactory *sharedFactory = nil;
     // Clear the NSURLCache
     [[NSURLCache sharedURLCache] removeAllCachedResponses];
 
-    if ([self respondsToSelector:@selector(didSetUp)]) {
-        [self didSetUp];
-    }
+    if ([RKTestFactory sharedFactory].setUpBlock) [RKTestFactory sharedFactory].setUpBlock();
 }
 
 + (void)tearDown
@@ -284,9 +272,7 @@ static RKTestFactory *sharedFactory = nil;
     [RKObjectManager setSharedManager:nil];
     [RKManagedObjectStore setDefaultStore:nil];
 
-    if ([self respondsToSelector:@selector(didTearDown)]) {
-        [self didTearDown];
-    }
+    if ([RKTestFactory sharedFactory].tearDownBlock) [RKTestFactory sharedFactory].tearDownBlock();
 }
 
 @end

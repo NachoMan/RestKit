@@ -26,6 +26,12 @@
 #import "RKCat.h"
 #import "RKObjectMapperTestModel.h"
 
+@interface RKSubclassedTestModel : RKObjectMapperTestModel
+@end
+
+@implementation RKSubclassedTestModel
+@end
+
 @interface RKTestAFHTTPClient : AFHTTPClient
 @end
 
@@ -409,6 +415,20 @@
     expect([request allHTTPHeaderFields][@"Accept"]).to.equal(@"application/json");
 }
 
+- (void)testDefaultAcceptHeaderOfObjectManagerOverridesValueOfHTTPClientOnMultipartRequests
+{
+    RKTestAFHTTPClient *testClient = [[RKTestAFHTTPClient alloc] initWithBaseURL:[NSURL URLWithString:@"http://test.com"]];
+    RKObjectManager *manager = [[RKObjectManager alloc] initWithHTTPClient:testClient];
+    [manager setAcceptHeaderWithMIMEType:@"application/json"];
+    RKHuman *temporaryHuman = [RKTestFactory insertManagedObjectForEntityForName:@"RKHuman" inManagedObjectContext:nil withProperties:nil];
+    NSURLRequest *request = [manager multipartFormRequestWithObject:temporaryHuman method:RKRequestMethodPATCH path:@"/the/path" parameters:@{@"key": @"value"} constructingBodyWithBlock:nil];
+
+    expect([request.URL absoluteString]).to.equal(@"http://test.com/the/path");
+    expect(request.HTTPMethod).to.equal(@"PATCH");
+    expect([request allHTTPHeaderFields][@"test"]).to.equal(@"value");
+    expect([request allHTTPHeaderFields][@"Accept"]).to.equal(@"application/json");
+}
+
 - (void)testRegistrationOfHTTPRequestOperationClass
 {
     RKObjectManager *manager = [RKObjectManager managerWithBaseURL:[NSURL URLWithString:@"http://restkit.org"]];
@@ -464,6 +484,48 @@
         expect(humans).to.haveCountOf(2);
         expect(humans[0]).to.beInstanceOf([RKHuman class]);
     });
+}
+
+- (void)testThatAttemptingToAddARequestDescriptorThatOverlapsAnExistingEntryGeneratesAnError
+{
+    RKObjectMapping *mapping = [RKObjectMapping requestMapping];
+    RKRequestDescriptor *requestDesriptor1 = [RKRequestDescriptor requestDescriptorWithMapping:mapping objectClass:[RKCat class] rootKeyPath:nil];
+    RKRequestDescriptor *requestDesriptor2 = [RKRequestDescriptor requestDescriptorWithMapping:mapping objectClass:[RKCat class] rootKeyPath:@"cat"];
+    RKObjectManager *objectManager = [RKTestFactory objectManager];
+    [objectManager addRequestDescriptor:requestDesriptor1];
+    
+    NSException *caughtException = nil;
+    @try {
+        [objectManager addRequestDescriptor:requestDesriptor2];
+    }
+    @catch (NSException *exception) {
+        caughtException = exception;
+    }
+    @finally {
+        expect(caughtException).notTo.beNil();
+    }
+}
+
+- (void)testThatRegisteringARequestDescriptorForASubclassSecondWillMatchAppropriately
+{
+    RKObjectMapping *mapping1 = [RKObjectMapping requestMapping];
+    [mapping1 addAttributeMappingsFromArray:@[ @"name" ]];
+    RKObjectMapping *mapping2 = [RKObjectMapping requestMapping];
+    [mapping2 addAttributeMappingsFromArray:@[ @"age" ]];
+    
+    RKRequestDescriptor *requestDesriptor1 = [RKRequestDescriptor requestDescriptorWithMapping:mapping1 objectClass:[RKObjectMapperTestModel class] rootKeyPath:nil];
+    RKRequestDescriptor *requestDesriptor2 = [RKRequestDescriptor requestDescriptorWithMapping:mapping2 objectClass:[RKSubclassedTestModel class] rootKeyPath:@"subclassed"];
+    RKObjectManager *objectManager = [RKTestFactory objectManager];
+    objectManager.requestSerializationMIMEType = RKMIMETypeJSON;
+    [objectManager addRequestDescriptor:requestDesriptor1];
+    [objectManager addRequestDescriptor:requestDesriptor2];
+    
+    RKSubclassedTestModel *model = [RKSubclassedTestModel new];
+    model.name = @"Blake";
+    model.age = @30;
+    NSURLRequest *request = [objectManager requestWithObject:model method:RKRequestMethodPOST path:@"/path" parameters:nil];
+    NSDictionary *dictionary = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:0 error:nil];
+    expect(dictionary).to.equal(@{ @"subclassed": @{ @"age": @(30) } });
 }
 
 //- (void)testShouldHandleConnectionFailures
