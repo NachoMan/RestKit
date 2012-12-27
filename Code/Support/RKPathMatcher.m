@@ -59,18 +59,18 @@ static NSString *RKEncodeURLString(NSString *unencodedString)
     return copy;
 }
 
-+ (RKPathMatcher *)pathMatcherWithPattern:(NSString *)patternString
++ (instancetype)pathMatcherWithPattern:(NSString *)patternString
 {
     NSAssert(patternString != NULL, @"Pattern string must not be empty in order to perform pattern matching.");
-    RKPathMatcher *matcher = [[RKPathMatcher alloc] init];
+    RKPathMatcher *matcher = [self new];
     matcher.socPattern = [SOCPattern patternWithString:patternString];
     matcher.patternString = patternString;
     return matcher;
 }
 
-+ (RKPathMatcher *)pathMatcherWithPath:(NSString *)pathString
++ (instancetype)pathMatcherWithPath:(NSString *)pathString
 {
-    RKPathMatcher *matcher = [[RKPathMatcher alloc] init];
+    RKPathMatcher *matcher = [self new];
     matcher.sourcePath = pathString;
     matcher.rootPath = pathString;
     return matcher;
@@ -126,11 +126,6 @@ static NSString *RKEncodeURLString(NSString *unencodedString)
     self.sourcePath = sourceString;
     self.rootPath = sourceString;
     return [self itMatchesAndHasParsedArguments:arguments tokenizeQueryStrings:shouldTokenize];
-}
-
-- (NSString *)pathFromObject:(id)object
-{
-    return [self pathFromObject:object addingEscapes:YES];
 }
 
 - (NSString *)pathFromObject:(id)object addingEscapes:(BOOL)addEscapes

@@ -9,10 +9,12 @@
 #import <RestKit/RestKit.h>
 #import "RKTwitterAppDelegate.h"
 #import "RKTwitterViewController.h"
-#import "RKTStatus.h"
+#import "RKTweet.h"
 #import "RKTUser.h"
 
 @implementation RKTwitterAppDelegate
+
+@synthesize window;
 
 #pragma mark -
 #pragma mark Application lifecycle
@@ -33,7 +35,6 @@
   
     // Initialize RestKit
     RKObjectManager *objectManager = [[RKObjectManager alloc] initWithHTTPClient:client];
-
   
     // Setup our object mappings
     RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTUser class]];
@@ -43,7 +44,7 @@
      @"name" : @"name"
      }];
 
-    RKObjectMapping *statusMapping = [RKObjectMapping mappingForClass:[RKTStatus class]];
+    RKObjectMapping *statusMapping = [RKObjectMapping mappingForClass:[RKTweet class]];
     [statusMapping addAttributeMappingsFromDictionary:@{
      @"id" : @"statusID",
      @"created_at" : @"createdAt",
@@ -71,13 +72,11 @@
     // Create Window and View Controllers
     RKTwitterViewController *viewController = [[RKTwitterViewController alloc] initWithNibName:nil bundle:nil];
     UINavigationController *controller = [[UINavigationController alloc] initWithRootViewController:viewController];
-    UIWindow *window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 320, 480)];
-    [window addSubview:controller.view];
-    [window makeKeyAndVisible];
+    self.window = [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 320, 480)];
+    self.window.rootViewController = controller;
+    [self.window makeKeyAndVisible];
 
     return YES;
 }
-
-
 
 @end

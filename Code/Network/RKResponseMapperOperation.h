@@ -53,9 +53,9 @@
  @param responseDescriptors An array whose elements are `RKResponseDescriptor` objects specifying object mapping configurations that may be applied to the response.
  @return The receiver, initialized with the response, data, and response descriptor objects.
  */
-- (id)initWithResponse:(NSHTTPURLResponse *)response
-                  data:(NSData *)data
-   responseDescriptors:(NSArray *)responseDescriptors;
+- (instancetype)initWithResponse:(NSHTTPURLResponse *)response
+                            data:(NSData *)data
+             responseDescriptors:(NSArray *)responseDescriptors;
 
 ///------------------------------
 /// @name Accessing Response Data
@@ -130,6 +130,18 @@
  */
 @property (nonatomic, strong, readonly) NSError *error;
 
+///-------------------------------------
+/// @name Manipulating the Mappable Data
+///-------------------------------------
+
+/**
+ Sets a block to be executed before the response mapper operation begins mapping the deserialized response body, providing an opportunity to manipulate the mappable representation input before mapping begins.
+ 
+ @param block A block object to be executed before the deserialized response is passed to the response mapper. The block has an `id` return type and must return a dictionary or array of dictionaries corresponding to the object representations that are to be mapped. The block accepts a single argument: the deserialized response data that was loaded via HTTP. If you do not wish to make any chances to the response body before mapping begins, the block should return the value passed in the `deserializedResponseBody` block argument. Returning `nil` will decline the mapping from proceeding and fail the operation with an error with the `RKMappingErrorMappingDeclined` code.
+ @warning The deserialized response body may or may not be immutable depending on the implementation details of the `RKSerialization` class that deserialized the response. If you wish to make changes to the mappable object representations, you must obtain a mutable copy of the response body input.
+ */
+- (void)setWillMapDeserializedResponseBlock:(id (^)(id deserializedResponseBody))block;
+
 @end
 
 /**
@@ -163,7 +175,7 @@
 @property (nonatomic, strong) NSManagedObjectContext *managedObjectContext;
 
 /**
- An object implementing the `RKManagedObjectCaching` protocol to be used for retrieving existing `NSManagedObject` instances by primary key. If `nil`, existing object cannot be retrieved and new objects will be created for all mappable content within the response data, likely resulting in the creation of duplicate objects.
+ An object implementing the `RKManagedObjectCaching` protocol to be used for retrieving existing `NSManagedObject` instances by identification attributes. If `nil`, existing object cannot be retrieved and new objects will be created for all mappable content within the response data, likely resulting in the creation of duplicate objects.
  
  @see `RKManagedObjectCaching`
  */
@@ -185,9 +197,9 @@
 /**
  Returns a representation of a mapping result as an `NSError` value.
  
- The returned `NSError` object is in the `RKErrorDomain` domain and has the `RKMappingErrorFromMappingResult` code. The value for the `NSLocalizedDescriptionKey` is computed by retrieving the objects in the mapping result as an array, evaluating `valueForKeyPath:@"errorMessage"` against the array, and joining the returned error messages by comma to form a single string value. The source error objects are returned with the `NSError` in the `userInfo` dictionary under the `RKObjectMapperErrorObjectsKey` key.
+ The returned `NSError` object is in the `RKErrorDomain` domain and has the `RKMappingErrorFromMappingResult` code. The value for the `NSLocalizedDescriptionKey` is computed by retrieving the objects in the mapping result as an array, evaluating `valueForKeyPath:@"description"` against the array, and joining the returned error messages by comma to form a single string value. The source error objects are returned with the `NSError` in the `userInfo` dictionary under the `RKObjectMapperErrorObjectsKey` key.
  
- The `errorMessage` property is significant as it is an informal protocol that must be adopted by objects wishing to representing response errors.
+ This implementation assumes that the class used to represent the response error will return a string description of the client side error when sent the `description` message.
  
  @return An error object representing the objects contained in the mapping result.
  @see `RKErrorMessage`

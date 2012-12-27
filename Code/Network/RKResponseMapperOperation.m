@@ -37,7 +37,7 @@ NSError *RKErrorFromMappingResult(RKMappingResult *mappingResult)
     NSArray *collection = [mappingResult array];
     NSString *description = nil;
     if ([collection count] > 0) {
-        description = [[collection valueForKeyPath:@"errorMessage"] componentsJoinedByString:@", "];
+        description = [[collection valueForKeyPath:@"description"] componentsJoinedByString:@", "];
     } else {
         RKLogWarning(@"Expected mapping result to contain at least one object to construct an error");
     }
@@ -56,6 +56,39 @@ static NSError *RKUnprocessableClientErrorFromResponse(NSHTTPURLResponse *respon
     [userInfo setValue:[response URL] forKey:NSURLErrorFailingURLErrorKey];
     
     return [[NSError alloc] initWithDomain:RKErrorDomain code:NSURLErrorBadServerResponse userInfo:userInfo];
+}
+
+NSString *RKStringFromIndexSet(NSIndexSet *indexSet); // Defined in RKResponseDescriptor.m
+static NSString *RKMatchFailureDescriptionForResponseDescriptorWithResponse(RKResponseDescriptor *responseDescriptor, NSHTTPURLResponse *response)
+{
+    if (responseDescriptor.statusCodes && ![responseDescriptor.statusCodes containsIndex:response.statusCode]) {
+        return [NSString stringWithFormat:@"response status code %ld is not within the range %@", (long) response.statusCode, RKStringFromIndexSet(responseDescriptor.statusCodes)];
+    }
+    
+    NSString *pathAndQueryString = RKPathAndQueryStringFromURLRelativeToURL(response.URL, responseDescriptor.baseURL);
+    if (responseDescriptor.baseURL && !RKURLIsRelativeToURL(response.URL, responseDescriptor.baseURL)) {
+        // Not relative to the baseURL
+        return [NSString stringWithFormat:@"response URL '%@' is not relative to the baseURL '%@'.", response.URL, responseDescriptor.baseURL];
+    }
+    
+    // Must be a path pattern mismatch
+    return [NSString stringWithFormat:@"response path '%@' did not match the path pattern '%@'.", pathAndQueryString, responseDescriptor.pathPattern];
+}
+
+static NSString *RKFailureReasonErrorStringForResponseDescriptorsMismatchWithResponse(NSArray *responseDescriptors, NSHTTPURLResponse *response)
+{
+    NSMutableString *failureReason = [NSMutableString string];
+    [failureReason appendFormat:@"A %ld response was loaded from the URL '%@', which failed to match all (%ld) response descriptors:",
+     (long) response.statusCode, response.URL, (long) [responseDescriptors count]];
+    
+    for (RKResponseDescriptor *responseDescriptor in responseDescriptors) {
+        [failureReason appendFormat:@"\n  <RKResponseDescriptor: %p baseURL=%@ pathPattern=%@ statusCodes=%@> failed to match: %@",
+         responseDescriptor, responseDescriptor.baseURL, responseDescriptor.pathPattern,
+         responseDescriptor.statusCodes ? RKStringFromIndexSet(responseDescriptor.statusCodes) : responseDescriptor.statusCodes,
+         RKMatchFailureDescriptionForResponseDescriptorWithResponse(responseDescriptor, response)];
+    }
+    
+    return failureReason;
 }
 
 /**
@@ -79,6 +112,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
 @property (nonatomic, strong, readwrite) NSError *error;
 @property (nonatomic, strong, readwrite) NSDictionary *responseMappingsDictionary;
 @property (nonatomic, strong) RKMapperOperation *mapperOperation;
+@property (nonatomic, copy) id (^willMapDeserializedResponseBlock)(id deserializedResponseBody);
 @end
 
 @interface RKResponseMapperOperation (ForSubclassEyesOnly)
@@ -113,7 +147,7 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
     __block id object;
     dispatch_sync(RKResponseMapperSerializationQueue(), ^{
         object = [RKMIMETypeSerialization objectFromData:self.data MIMEType:MIMEType error:&underlyingError];
-    });
+    });    
     if (! object) {
         NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
         [userInfo setValue:[NSString stringWithFormat:@"Loaded an unprocessable response (%ld) with content type '%@'", (long) self.response.statusCode, MIMEType]
@@ -200,10 +234,21 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
         self.error = error;
         return;
     }
-    if (self.isCancelled) return;
+    if (self.isCancelled) return;        
+    
+    // Invoke the will map deserialized response block
+    if (self.willMapDeserializedResponseBlock) {
+        parsedBody = self.willMapDeserializedResponseBlock(parsedBody);
+        if (! parsedBody) {
+            NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Mapping was declined due to a `willMapDeserializedResponseBlock` returning nil." };
+            self.error = [NSError errorWithDomain:RKErrorDomain code:RKMappingErrorFromMappingResult userInfo:userInfo];
+            RKLogError(@"Failed to parse response data: %@", [error localizedDescription]);
+            return;
+        }
+    }
 
     // Object map the response
-    self.mappingResult = [self performMappingWithObject:parsedBody error:&error];
+    self.mappingResult = [self performMappingWithObject:parsedBody error:&error];    
     
     // If the response is a client error return either the mapping error or the mapped result to the caller as the error
     if (isClientError) {
@@ -214,6 +259,18 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
             if (! error) error = RKUnprocessableClientErrorFromResponse(self.response);
         }
         self.error = error;
+        return;
+    }
+    
+    // Fail if no response descriptors matched
+    if (error.code == RKMappingErrorNotFound && [self.responseMappingsDictionary count] == 0) {
+        NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: NSLocalizedString(@"No response descriptors match the response loaded.", nil),
+                                    NSLocalizedFailureReasonErrorKey: RKFailureReasonErrorStringForResponseDescriptorsMismatchWithResponse(self.responseDescriptors, self.response),
+                                    RKMappingErrorKeyPathErrorKey: [NSNull null],
+                                    NSURLErrorFailingURLErrorKey: self.response.URL,
+                                    NSURLErrorFailingURLStringErrorKey: [self.response.URL absoluteString],
+                                    NSUnderlyingErrorKey: error};
+        self.error = [[NSError alloc] initWithDomain:RKErrorDomain code:RKMappingErrorNotFound userInfo:userInfo];
         return;
     }
     
@@ -230,9 +287,13 @@ static dispatch_queue_t RKResponseMapperSerializationQueue() {
 - (RKMappingResult *)performMappingWithObject:(id)sourceObject error:(NSError **)error
 {
     RKObjectMappingOperationDataSource *dataSource = [RKObjectMappingOperationDataSource new];
-    self.mapperOperation = [[RKMapperOperation alloc] initWithObject:sourceObject mappingsDictionary:self.responseMappingsDictionary];
+    self.mapperOperation = [[RKMapperOperation alloc] initWithRepresentation:sourceObject mappingsDictionary:self.responseMappingsDictionary];
     self.mapperOperation.mappingOperationDataSource = dataSource;
-    self.mapperOperation.targetObject = self.targetObject;
+    if (NSLocationInRange(self.response.statusCode, RKStatusCodeRangeForClass(RKStatusCodeClassSuccessful))) {
+        self.mapperOperation.targetObject = self.targetObject;
+    } else {
+        RKLogInfo(@"Non-successful status code encountered: performing mapping with nil target object.");
+    }
     [self.mapperOperation start];
     if (error) *error = self.mapperOperation.error;
     return self.mapperOperation.mappingResult;
@@ -266,7 +327,7 @@ static inline NSManagedObjectID *RKObjectIDFromObjectIfManaged(id object)
     self.operationQueue = [NSOperationQueue new];
     [self.managedObjectContext performBlockAndWait:^{
         // Configure the mapper
-        self.mapperOperation = [[RKMapperOperation alloc] initWithObject:sourceObject mappingsDictionary:self.responseMappingsDictionary];
+        self.mapperOperation = [[RKMapperOperation alloc] initWithRepresentation:sourceObject mappingsDictionary:self.responseMappingsDictionary];
         self.mapperOperation.delegate = self.mapperDelegate;
         
         // Configure a data source to defer execution of connection operations until mapping is complete
@@ -299,7 +360,7 @@ static inline NSManagedObjectID *RKObjectIDFromObjectIfManaged(id object)
                 RKLogTrace(@"Mapping HTTP response to nil target object...");
             }
         } else {
-            RKLogInfo(@"Non-successful state code encountered: performing mapping with nil target object.");
+            RKLogInfo(@"Non-successful status code encountered: performing mapping with nil target object.");
         }
 
         [self.mapperOperation start];

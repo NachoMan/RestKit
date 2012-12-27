@@ -21,13 +21,17 @@
 #import "RKObjectMapping.h"
 #import "RKAttributeMapping.h"
 
-@class RKMappingOperation, RKDynamicMapping, RKConnectionMapping;
+@class RKMappingOperation, RKDynamicMapping, RKConnectionDescription;
 @protocol RKMappingOperationDataSource;
 
 /**
  Objects acting as the delegate for `RKMappingOperation` objects must adopt the `RKMappingOperationDelegate` protocol. These methods enable the delegate to be notified of events such as the application of attribute and relationship mappings during a mapping operation.
  */
 @protocol RKMappingOperationDelegate  <NSObject>
+
+///---------------------------------------
+/// @name Tracking Property Mapping Events
+///---------------------------------------
 
 @optional
 
@@ -78,6 +82,10 @@
  */
 - (void)mappingOperation:(RKMappingOperation *)operation didFailWithError:(NSError *)error;
 
+///-----------------------------------------
+/// @name Tracking Dynamic Mapping Selection
+///-----------------------------------------
+
 /**
  Tells the delegate that the mapping operation has selected a concrete object mapping with which to map the source object.
 
@@ -91,6 +99,10 @@
 
 #ifdef _COREDATADEFINES_H
 
+///----------------------------------------
+/// @name Tracking Relationship Connections
+///----------------------------------------
+
 /**
  Tells the delegate that the mapping operation has connected a relationship.
 
@@ -99,9 +111,9 @@
  @param operation The mapping operation.
  @param relationship The relationship that was connected.
  @param value The value that was connected to the relationship
- @param connectionMapping The mappings that was used to connect the relationship.
+ @param connection The connection object describing how the relationship was to be connected.
  */
-- (void)mappingOperation:(RKMappingOperation *)operation didConnectRelationship:(NSRelationshipDescription *)relationship withValue:(id)value usingMapping:(RKConnectionMapping *)connectionMapping;
+- (void)mappingOperation:(RKMappingOperation *)operation didConnectRelationship:(NSRelationshipDescription *)relationship toValue:(id)value usingConnection:(RKConnectionDescription *)connection;
 
 /**
  Tells the delegate that the mapping operation failed to connect a relationship.
@@ -110,9 +122,9 @@
 
  @param operation The mapping operation.
  @param relationship The relationship that was connected.
- @param connectionMapping The mappings that was used to connect the relationship.
+ @param connection The connection object describing how the relationship was to be connected.
  */
-- (void)mappingOperation:(RKMappingOperation *)operation didFailToConnectRelationship:(NSRelationshipDescription *)relationship usingMapping:(RKConnectionMapping *)connectionMapping;
+- (void)mappingOperation:(RKMappingOperation *)operation didFailToConnectRelationship:(NSRelationshipDescription *)relationship usingConnection:(RKConnectionDescription *)connection;
 
 #endif
 
@@ -135,7 +147,7 @@
  @param objectOrDynamicMapping An instance of `RKObjectMapping` or `RKDynamicMapping` defining how the mapping is to be performed.
  @return The receiver, initialized with a source object, a destination object, and a mapping.
  */
-- (id)initWithSourceObject:(id)sourceObject destinationObject:(id)destinationObject mapping:(RKMapping *)objectOrDynamicMapping;
+- (instancetype)initWithSourceObject:(id)sourceObject destinationObject:(id)destinationObject mapping:(RKMapping *)objectOrDynamicMapping;
 
 ///--------------------------------------
 /// @name Accessing Mapping Configuration

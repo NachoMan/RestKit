@@ -24,7 +24,6 @@
 #import "RKMappableObject.h"
 #import "RKChild.h"
 #import "RKParent.h"
-#import "NSEntityDescription+RKAdditions.h"
 #import "RKManagedObjectMappingOperationDataSource.h"
 #import "RKDynamicMapping.h"
 
@@ -42,6 +41,8 @@
 - (void)tearDown
 {
     [RKTestFactory tearDown];
+    
+    [RKEntityMapping setEntityIdentificationInferenceEnabled:YES];
 }
 
 - (void)testShouldReturnTheDefaultValueForACoreDataAttribute
@@ -49,8 +50,8 @@
     // Load Core Data
     RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
 
-    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"RKCat" inManagedObjectStore:managedObjectStore];
-    id value = [mapping defaultValueForMissingAttribute:@"name"];
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Cat" inManagedObjectStore:managedObjectStore];
+    id value = [mapping defaultValueForAttribute:@"name"];
     assertThat(value, is(equalTo(@"Kitty Cat!")));
 }
 
@@ -58,26 +59,24 @@
 {
     RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
     managedObjectStore.managedObjectCache = [[RKInMemoryManagedObjectCache alloc] initWithManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
-    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"RKHuman" inManagedObjectStore:managedObjectStore];
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
     mapping.forceCollectionMapping = YES;
-    mapping.primaryKeyAttribute = @"name";
-    [mapping mapKeyOfNestedDictionaryToAttribute:@"name"];
+    mapping.identificationAttributes = @[ @"name" ];
+    [mapping addAttributeMappingFromKeyOfRepresentationToAttribute:@"name"];
     RKAttributeMapping *idMapping = [RKAttributeMapping attributeMappingFromKeyPath:@"(name).id" toKeyPath:@"railsID"];
     [mapping addPropertyMapping:idMapping];
     NSMutableDictionary *mappingsDictionary = [NSMutableDictionary dictionary];
     [mappingsDictionary setObject:mapping forKey:@"users"];
 
     id mockCacheStrategy = [OCMockObject partialMockForObject:managedObjectStore.managedObjectCache];
-    [[[mockCacheStrategy expect] andForwardToRealObject] findInstanceOfEntity:OCMOCK_ANY
-                                                      withPrimaryKeyAttribute:mapping.primaryKeyAttribute
-                                                                        value:@"blake"
-                                                       inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
-    [[[mockCacheStrategy expect] andForwardToRealObject] findInstanceOfEntity:mapping.entity
-                                                      withPrimaryKeyAttribute:mapping.primaryKeyAttribute
-                                                                        value:@"rachit"
-                                                       inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    [[[mockCacheStrategy expect] andForwardToRealObject] managedObjectsWithEntity:OCMOCK_ANY
+                                                                  attributeValues:@{ @"name": @"blake" }
+                                                           inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    [[[mockCacheStrategy expect] andForwardToRealObject] managedObjectsWithEntity:OCMOCK_ANY
+                                                                  attributeValues:@{ @"name": @"rachit" }
+                                                           inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
     id userInfo = [RKTestFixture parsedObjectWithContentsOfFixture:@"DynamicKeys.json"];
-    RKMapperOperation *mapper = [[RKMapperOperation alloc] initWithObject:userInfo mappingsDictionary:mappingsDictionary];
+    RKMapperOperation *mapper = [[RKMapperOperation alloc] initWithRepresentation:userInfo mappingsDictionary:mappingsDictionary];
     RKManagedObjectMappingOperationDataSource *dataSource = [[RKManagedObjectMappingOperationDataSource alloc] initWithManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext
                                                                                                                                       cache:managedObjectStore.managedObjectCache];
     mapper.mappingOperationDataSource = dataSource;
@@ -89,31 +88,31 @@
 {
     RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
     RKDynamicMapping *dynamicMapping = [RKDynamicMapping new];
-    RKEntityMapping *childMapping = [RKEntityMapping mappingForEntityForName:@"RKChild" inManagedObjectStore:managedObjectStore];
-    childMapping.primaryKeyAttribute = @"railsID";
+    RKEntityMapping *childMapping = [RKEntityMapping mappingForEntityForName:@"Child" inManagedObjectStore:managedObjectStore];
+    childMapping.identificationAttributes = @[ @"railsID" ];
     [childMapping addAttributeMappingsFromArray:@[@"name"]];
 
-    RKEntityMapping *parentMapping = [RKEntityMapping mappingForEntityForName:@"RKParent" inManagedObjectStore:managedObjectStore];
-    parentMapping.primaryKeyAttribute = @"railsID";
+    RKEntityMapping *parentMapping = [RKEntityMapping mappingForEntityForName:@"Parent" inManagedObjectStore:managedObjectStore];
+    parentMapping.identificationAttributes = @[ @"railsID" ];
     [parentMapping addAttributeMappingsFromArray:@[@"name", @"age"]];
 
     [dynamicMapping setObjectMapping:parentMapping whenValueOfKeyPath:@"type" isEqualTo:@"Parent"];
     [dynamicMapping setObjectMapping:childMapping whenValueOfKeyPath:@"type" isEqualTo:@"Child"];
 
     RKObjectMapping *mapping = [dynamicMapping objectMappingForRepresentation:[RKTestFixture parsedObjectWithContentsOfFixture:@"parent.json"]];
-    assertThat(mapping, is(notNilValue()));
-    assertThatBool([mapping isKindOfClass:[RKEntityMapping class]], is(equalToBool(YES)));
-    assertThat(NSStringFromClass(mapping.objectClass), is(equalTo(@"RKParent")));
+    expect(mapping).notTo.beNil();
+    expect([mapping isKindOfClass:[RKEntityMapping class]]).to.equal(YES);
+    expect(NSStringFromClass(mapping.objectClass)).to.equal(@"RKParent");
     mapping = [dynamicMapping objectMappingForRepresentation:[RKTestFixture parsedObjectWithContentsOfFixture:@"child.json"]];
-    assertThat(mapping, is(notNilValue()));
-    assertThatBool([mapping isKindOfClass:[RKEntityMapping class]], is(equalToBool(YES)));
-    assertThat(NSStringFromClass(mapping.objectClass), is(equalTo(@"RKChild")));
+    expect(mapping).notTo.beNil();
+    expect([mapping isKindOfClass:[RKEntityMapping class]]).to.equal(YES);
+    expect(NSStringFromClass(mapping.objectClass)).to.equal(@"RKChild");
 }
 
 - (void)testShouldIncludeTransformableAttributesInPropertyNamesAndTypes
 {
     RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
-    NSEntityDescription *entity = [NSEntityDescription entityForName:@"RKHuman" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Human" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
     NSDictionary *attributesByName = [entity attributesByName];
     NSDictionary *propertiesByName = [entity propertiesByName];
     NSDictionary *relationshipsByName = [entity relationshipsByName];
@@ -121,40 +120,21 @@
     assertThat([propertiesByName objectForKey:@"favoriteColors"], is(notNilValue()));
     assertThat([relationshipsByName objectForKey:@"favoriteColors"], is(nilValue()));
 
-    NSDictionary *propertyNamesAndTypes = [[RKPropertyInspector sharedInspector] propertyNamesAndClassesForEntity:entity];
-    assertThat([propertyNamesAndTypes objectForKey:@"favoriteColors"], is(notNilValue()));
-}
-
-- (void)testThatAssigningAnEntityWithANonNilPrimaryKeyAttributeSetsTheDefaultValueForTheMapping
-{
-    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
-    NSEntityDescription *entity = [NSEntityDescription entityForName:@"RKCat" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
-    RKEntityMapping *mapping = [[RKEntityMapping alloc] initWithEntity:entity];
-    assertThat(mapping.primaryKeyAttribute, is(equalTo(@"railsID")));
-}
-
-- (void)testThatAssigningAPrimaryKeyAttributeToAMappingWhoseEntityHasANilPrimaryKeyAttributeAssignsItToTheEntity
-{
-    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
-    NSEntityDescription *entity = [NSEntityDescription entityForName:@"RKCloud" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
-    RKEntityMapping *mapping = [[RKEntityMapping alloc] initWithEntity:entity];
-    assertThat(mapping.primaryKeyAttribute, is(nilValue()));
-    mapping.primaryKeyAttribute = @"name";
-    assertThat(entity.primaryKeyAttributeName, is(equalTo(@"name")));
-    assertThat(entity.primaryKeyAttribute, is(notNilValue()));
+    NSDictionary *propertyNamesAndTypes = [[RKPropertyInspector sharedInspector] propertyInspectionForEntity:entity];
+    assertThat([propertyNamesAndTypes objectForKey:@"favoriteColors"][RKPropertyInspectionKeyValueCodingClassKey], is(notNilValue()));
 }
 
 - (void)testThatMappingAnEmptyArrayOnToAnExistingRelationshipDisassociatesTheRelatedObjects
 {
-    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"RKHuman" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
-    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"RKCat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
-    RKCat *roy = [RKTestFactory insertManagedObjectForEntityForName:@"RKCat" inManagedObjectContext:nil withProperties:@{ @"name": @"Roy" }];
+    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
+    RKCat *roy = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{ @"name": @"Roy" }];
     blake.cats = [NSSet setWithObjects:asia, roy, nil];
     
     NSDictionary *JSON = @{ @"name" : @"Blake Watters", @"cats" : @[] };
-    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"RKCat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"Cat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [catMapping addAttributeMappingsFromArray:@[@"name"]];
-    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"RKHuman" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [humanMapping addAttributeMappingsFromArray:@[@"name"]];
     [humanMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:@"cats" toKeyPath:@"cats" withMapping:catMapping]];
     
@@ -169,14 +149,14 @@
 
 - (void)testThatMappingAnNullArrayOnToAnExistingToOneRelationshipDisassociatesTheRelatedObjects
 {
-    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"RKHuman" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
-    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"RKCat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
+    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
     blake.favoriteCat = asia;
     
     NSDictionary *JSON = @{ @"name" : @"Blake Watters", @"favoriteCat" : [NSNull null] };
-    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"RKCat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"Cat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [catMapping addAttributeMappingsFromArray:@[@"name"]];
-    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"RKHuman" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [humanMapping addAttributeMappingsFromArray:@[@"name"]];
     [humanMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:@"favoriteCat" toKeyPath:@"favoriteCat" withMapping:catMapping]];
     
@@ -192,15 +172,15 @@
 
 - (void)testThatMappingAnNullArrayOnToAnExistingToManyRelationshipDisassociatesTheRelatedObjects
 {
-    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"RKHuman" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
-    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"RKCat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
-    RKCat *roy = [RKTestFactory insertManagedObjectForEntityForName:@"RKCat" inManagedObjectContext:nil withProperties:@{ @"name": @"Roy" }];
+    RKHuman *blake = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:@{ @"name": @"Blake" }];
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{ @"name": @"Asia" }];
+    RKCat *roy = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{ @"name": @"Roy" }];
     blake.cats = [NSSet setWithObjects:asia, roy, nil];
     
     NSDictionary *JSON = @{ @"name" : @"Blake Watters", @"cats" : [NSNull null] };
-    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"RKCat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *catMapping = [RKEntityMapping mappingForEntityForName:@"Cat" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [catMapping addAttributeMappingsFromArray:@[@"name"]];
-    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"RKHuman" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    RKEntityMapping *humanMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [humanMapping addAttributeMappingsFromArray:@[@"name"]];
     [humanMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:@"cats" toKeyPath:@"cats" withMapping:catMapping]];
     
@@ -211,6 +191,353 @@
     [mappingOperation start];
     expect(mappingOperation.error).to.beNil();
     expect(blake.cats).to.beEmpty();
+}
+
+- (void)testAddingConnectionByAttributeName
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    [humanEntityMapping addConnectionForRelationship:@"favoriteCat" connectedBy:@"favoriteCatID"];
+    RKConnectionDescription *connection = [humanEntityMapping connectionForRelationship:@"favoriteCat"];
+    NSDictionary *expectedAttributes = @{ @"favoriteCatID": @"favoriteCatID" };
+    expect(connection.attributes).to.equal(expectedAttributes);
+}
+
+- (void)testThatAddingConnectionByAttributeNameRespectsTransformationBlock
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    [humanEntityMapping setSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        return @"age";
+    }];
+    [humanEntityMapping addConnectionForRelationship:@"favoriteCat" connectedBy:@"favoriteCatID"];
+    RKConnectionDescription *connection = [humanEntityMapping connectionForRelationship:@"favoriteCat"];
+    NSDictionary *expectedAttributes = @{ @"favoriteCatID": @"age" };
+    expect(connection.attributes).to.equal(expectedAttributes);
+}
+
+- (void)testAddingConnectionByArrayOfAttributeNames
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    [humanEntityMapping addConnectionForRelationship:@"cats" connectedBy:@[ @"railsID", @"name" ]];
+    RKConnectionDescription *connection = [humanEntityMapping connectionForRelationship:@"cats"];
+    NSDictionary *expectedAttributes = @{ @"railsID": @"railsID", @"name": @"name" };
+    expect(connection.attributes).to.equal(expectedAttributes);
+}
+
+- (void)testAddingConnectionByArrayOfAttributeNamesRespectsTransformationBlock
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    [humanEntityMapping setSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        if ([sourceKey isEqualToString:@"railsID"]) return @"age";
+        else if ([sourceKey isEqualToString:@"name"]) return @"color";
+        else return sourceKey;
+    }];
+    [humanEntityMapping addConnectionForRelationship:@"cats" connectedBy:@[ @"railsID", @"name" ]];
+    RKConnectionDescription *connection = [humanEntityMapping connectionForRelationship:@"cats"];
+    NSDictionary *expectedAttributes = @{ @"railsID": @"age", @"name": @"color" };
+    expect(connection.attributes).to.equal(expectedAttributes);
+}
+
+- (void)testAddingConnectionByDictionaryOfAttributes
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    [humanEntityMapping addConnectionForRelationship:@"cats" connectedBy:@{ @"railsID": @"railsID", @"name": @"name" }];
+    RKConnectionDescription *connection = [humanEntityMapping connectionForRelationship:@"cats"];
+    NSDictionary *expectedAttributes = @{ @"railsID": @"railsID", @"name": @"name" };
+    expect(connection.attributes).to.equal(expectedAttributes);
+}
+
+- (void)testSettingEntityIdentificationAttributesWithInvalidAttributeNameRaisesException
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    RKEntityMapping *humanEntityMapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:managedObjectStore];
+    NSException *caughtException = nil;
+    @try {
+        humanEntityMapping.identificationAttributes = @[ @"invalid" ];
+    }
+    @catch (NSException *exception) {
+        caughtException = exception;
+    }
+    @finally {
+        expect(caughtException).notTo.beNil();
+        expect([caughtException reason]).to.equal(@"Invalid attribute 'invalid': no attribute was found for the given name in the 'Human' entity.");
+    }
+}
+
+- (void)testEntityIdentifierInferenceOnInit
+{
+    [RKEntityMapping setEntityIdentificationInferenceEnabled:YES];
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Parent" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    RKEntityMapping *entityMapping = [[RKEntityMapping alloc] initWithEntity:entity];
+    expect(entityMapping.identificationAttributes).notTo.beNil();
+    assertThat([entityMapping.identificationAttributes valueForKey:@"name"], equalTo(@[ @"parentID" ]));
+}
+
+- (void)testInitWithIdentifierInferenceDisabled
+{
+    [RKEntityMapping setEntityIdentificationInferenceEnabled:NO];
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Parent" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    RKEntityMapping *entityMapping = [[RKEntityMapping alloc] initWithEntity:entity];
+    expect(entityMapping.identificationAttributes).to.beNil();
+}
+
+#pragma mark - Entity Identification
+
+- (void)testThatInitEntityIdentificationAttributesToNil
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Human" inManagedObjectContext:managedObjectStore.mainQueueManagedObjectContext];
+    RKEntityMapping *entityMapping = [[RKEntityMapping alloc] initWithEntity:entity];
+    NSException *expectedExcepetion = nil;
+    @try {
+        entityMapping.identificationAttributes = nil;
+    }
+    @catch (NSException *exception) {
+        expectedExcepetion = exception;
+    }
+    expect(expectedExcepetion).to.beNil();
+}
+
+- (void)testThatInitEntityIdentifierWithEmptyAttributesRaisesException
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *entity = [NSEntityDescription entityForName:@"Human" inManagedObjectContext:managedObjectStore.mainQueueManagedObjectContext];
+    NSException *expectedExcepetion = nil;
+    RKEntityMapping *entityMapping = [[RKEntityMapping alloc] initWithEntity:entity];
+    @try {
+        entityMapping.identificationAttributes = @[];
+    }
+    @catch (NSException *exception) {
+        expectedExcepetion = exception;
+    }
+    expect(expectedExcepetion).notTo.beNil();
+    expect([expectedExcepetion description]).to.equal(@"At least one attribute must be provided to identify managed objects");
+}
+
+#pragma mark - Entity Identifier Inference
+
+- (void)testEntityIdentifierInferenceForEntityWithLlamaCasedIDAttribute
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"monkeyID" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceForEntityWithIDAttribute
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"ID"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"ID" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceForEntityWithIdentifierAttribute
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"identifier"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"identifier" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceForEntityWithURLAttribute
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"URL"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"URL" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceForEntityWithUrlAttribute
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"url"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"url" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceFromUserInfoKeyForSingleValue
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"]; // We ignore this by specifying the userInfo key
+    NSAttributeDescription *nameAttribute = [NSAttributeDescription new];
+    [nameAttribute setName:@"name"];
+    [entity setProperties:@[ identifierAttribute, nameAttribute ]];
+    [entity setUserInfo:@{ RKEntityIdentificationAttributesUserInfoKey: @"name" }];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"name" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceFromUserInfoKeyForArrayOfValues
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"];
+    NSAttributeDescription *nameAttribute = [NSAttributeDescription new];
+    [nameAttribute setName:@"name"];
+    [entity setProperties:@[ identifierAttribute, nameAttribute ]];
+    [entity setUserInfo:@{ RKEntityIdentificationAttributesUserInfoKey: @[ @"name", @"monkeyID" ] }];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"name", @"monkeyID" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceFromUserInfoKeyRaisesErrorForInvalidValue
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"];
+    NSAttributeDescription *nameAttribute = [NSAttributeDescription new];
+    [nameAttribute setName:@"name"];
+    [entity setProperties:@[ identifierAttribute, nameAttribute ]];
+    [entity setUserInfo:@{ RKEntityIdentificationAttributesUserInfoKey: @(12345) }];
+    
+    NSException *caughtException = nil;
+    @try {
+        NSArray __unused *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    }
+    @catch (NSException *exception) {
+        caughtException = exception;
+    }
+    @finally {
+        expect([caughtException name]).to.equal(NSInvalidArgumentException);
+        expect([caughtException reason]).to.equal(@"Invalid value given in user info key 'RKEntityIdentificationAttributes' of entity 'Monkey': expected an `NSString` or `NSArray` of strings, instead got '12345' (__NSCFNumber)");
+    }
+}
+
+- (void)testEntityIdentifierInferenceFromUserInfoKeyRaisesErrorForNonexistantAttributeName
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"];
+    [entity setProperties:@[ identifierAttribute ]];
+    [entity setUserInfo:@{ RKEntityIdentificationAttributesUserInfoKey: @"nonExistant" }];
+    
+    NSException *caughtException = nil;
+    @try {
+        NSArray __unused *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    }
+    @catch (NSException *exception) {
+        caughtException = exception;
+    }
+    @finally {
+        expect([caughtException name]).to.equal(NSInvalidArgumentException);
+        expect([caughtException reason]).to.equal(@"Invalid identifier attribute specified in user info key 'RKEntityIdentificationAttributes' of entity 'Monkey': no attribue was found with the name 'nonExistant'");
+    }
+}
+
+- (void)testInferenceOfSnakeCasedEntityName
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkey_id"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"monkey_id" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testInferenceOfCompoundSnakeCasedEntityName
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"ArcticMonkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"arctic_monkey_id"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"arctic_monkey_id" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testInferenceOfSnakeCasedEntityNameWithAbbreviation
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"ArcticMonkeyURL"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"arctic_monkey_url_id"];
+    [entity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"arctic_monkey_url_id" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceSearchesParentEntities
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSEntityDescription *parentEntity = [[NSEntityDescription alloc] init];
+    [parentEntity setName:@"Parent"];
+    [parentEntity setSubentities:@[ entity ]];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"];
+    [parentEntity setProperties:@[ identifierAttribute ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"monkeyID" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
+}
+
+- (void)testEntityIdentifierInferenceFromUserInfoSearchesParentEntities
+{
+    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+    [entity setName:@"Monkey"];
+    NSAttributeDescription *identifierAttribute = [NSAttributeDescription new];
+    [identifierAttribute setName:@"monkeyID"]; // We ignore this by specifying the userInfo key
+    NSAttributeDescription *nameAttribute = [NSAttributeDescription new];
+    [nameAttribute setName:@"name"];
+    [entity setProperties:@[ identifierAttribute, nameAttribute ]];
+    [entity setUserInfo:@{ RKEntityIdentificationAttributesUserInfoKey: @"name" }];
+    
+    NSEntityDescription *subentity = [NSEntityDescription new];
+    [subentity setName:@"SubMonkey"];
+    [entity setSubentities:@[ subentity ]];
+    NSArray *identificationAttributes = RKIdentificationAttributesInferredFromEntity(subentity);
+    expect(identificationAttributes).notTo.beNil();
+    NSArray *attributeNames = @[ @"name" ];
+    expect([identificationAttributes valueForKey:@"name"]).to.equal(attributeNames);
 }
 
 @end

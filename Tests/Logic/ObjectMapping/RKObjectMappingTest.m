@@ -14,6 +14,11 @@
 
 @implementation RKObjectMappingTest
 
+- (void)tearDown
+{
+    [RKObjectMapping setDefaultSourceToDestinationKeyTransformationBlock:nil];
+}
+
 - (void)testThatTwoMappingsWithTheSameAttributeMappingsButDifferentObjectClassesAreNotConsideredEqual
 {
     RKObjectMapping *mapping1 = [RKObjectMapping mappingForClass:[NSString class]];
@@ -163,6 +168,69 @@
         expect(exception).notTo.beNil();
         expect(exception.reason).to.equal(@"One or more of the property mappings in the given array has already been added to another `RKObjectMapping` object. You probably want to obtain a copy of the array of mappings: `[[NSArray alloc] initWithArray:arrayOfPropertyMappings copyItems:YES]`");
     }
+}
+
+#pragma mark - Key Transformations
+
+- (void)testPropertyNameTransformationBlockForAttributes
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping setSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        return [sourceKey uppercaseString];
+    }];
+    [mapping addAttributeMappingsFromArray:@[ @"name", @"rank" ]];
+    NSArray *expectedNames = @[ @"NAME", @"RANK" ];
+    expect([mapping.propertyMappingsByDestinationKeyPath allKeys]).to.equal(expectedNames);
+}
+
+- (void)testPropertyNameTransformationBlockForRelationships
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping setSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        return [sourceKey uppercaseString];
+    }];
+    RKObjectMapping *relatedMapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping addRelationshipMappingWithSourceKeyPath:@"something" mapping:relatedMapping];
+    RKRelationshipMapping *relationshipMapping = [mapping propertyMappingsByDestinationKeyPath][@"SOMETHING"];
+    expect(relationshipMapping).notTo.beNil();
+    expect(relationshipMapping.sourceKeyPath).to.equal(@"something");
+    expect(relationshipMapping.destinationKeyPath).to.equal(@"SOMETHING");
+}
+
+- (void)testTransformationOfAttributeKeyPaths
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping setSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        return [sourceKey capitalizedString];
+    }];
+    [mapping addAttributeMappingsFromArray:@[ @"user.comments" ]];
+    NSArray *expectedNames = @[ @"User.Comments" ];
+    expect([mapping.propertyMappingsByDestinationKeyPath allKeys]).to.equal(expectedNames);
+}
+
+- (void)testDefaultSourceToDestinationKeyTransformationBlock
+{
+    [RKObjectMapping setDefaultSourceToDestinationKeyTransformationBlock:^NSString *(RKObjectMapping *mapping, NSString *sourceKey) {
+        return [sourceKey capitalizedString];
+    }];
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping addAttributeMappingsFromArray:@[ @"user.comments" ]];
+    NSArray *expectedNames = @[ @"User.Comments" ];
+    expect([mapping.propertyMappingsByDestinationKeyPath allKeys]).to.equal(expectedNames);
+}
+
+- (void)testBreakageOfRecursiveInverseCyclicGraphs
+{
+    RKObjectMapping *parentMapping = [RKObjectMapping mappingForClass:[NSObject class]];
+    [parentMapping addAttributeMappingsFromDictionary:@{ @"first_name": @"firstName", @"last_name": @"lastName" }];
+    RKObjectMapping *childMapping = [RKObjectMapping mappingForClass:[NSObject class]];
+    [childMapping addAttributeMappingsFromDictionary:@{ @"first_name": @"firstName", @"last_name": @"lastName" }];
+    [parentMapping addRelationshipMappingWithSourceKeyPath:@"children" mapping:childMapping];
+    [childMapping addRelationshipMappingWithSourceKeyPath:@"parents" mapping:parentMapping];
+    RKObjectMapping *inverseMapping = [parentMapping inverseMapping];
+    expect([inverseMapping propertyMappingsBySourceKeyPath][@"firstName"]).notTo.beNil();
+    expect([inverseMapping propertyMappingsBySourceKeyPath][@"lastName"]).notTo.beNil();
+    expect([inverseMapping propertyMappingsBySourceKeyPath][@"children"]).notTo.beNil();
 }
 
 @end

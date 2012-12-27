@@ -20,6 +20,7 @@
 
 #import <CoreData/CoreData.h>
 #import "RKRelationshipConnectionOperation.h"
+#import "RKConnectionDescription.h"
 #import "RKEntityMapping.h"
 #import "RKLog.h"
 #import "RKManagedObjectCaching.h"
@@ -37,12 +38,30 @@ static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationsh
     return [relationship isOrdered] ? [NSMutableOrderedSet orderedSet] : [NSMutableSet set];
 }
 
+static BOOL RKConnectionAttributeValuesIsNotConnectable(NSDictionary *attributeValues)
+{
+    return [[NSSet setWithArray:[attributeValues allValues]] isEqualToSet:[NSSet setWithObject:[NSNull null]]];
+}
+
+static NSDictionary *RKConnectionAttributeValuesWithObject(RKConnectionDescription *connection, NSManagedObject *managedObject)
+{
+    NSCAssert([connection isForeignKeyConnection], @"Only valid for a foreign key connection");
+    NSMutableDictionary *destinationEntityAttributeValues = [NSMutableDictionary dictionaryWithCapacity:[connection.attributes count]];
+    for (NSString *sourceAttribute in connection.attributes) {
+        NSString *destinationAttribute = [connection.attributes objectForKey:sourceAttribute];
+        id sourceValue = [managedObject valueForKey:sourceAttribute];
+        [destinationEntityAttributeValues setValue:sourceValue ?: [NSNull null] forKey:destinationAttribute];
+    }
+    return RKConnectionAttributeValuesIsNotConnectable(destinationEntityAttributeValues) ? nil : destinationEntityAttributeValues;
+}
+
 @interface RKRelationshipConnectionOperation ()
 @property (nonatomic, strong, readwrite) NSManagedObject *managedObject;
-@property (nonatomic, strong, readwrite) RKConnectionMapping *connectionMapping;
+@property (nonatomic, strong, readwrite) RKConnectionDescription *connection;
 @property (nonatomic, strong, readwrite) id<RKManagedObjectCaching> managedObjectCache;
 @property (nonatomic, strong, readwrite) NSError *error;
 @property (nonatomic, strong, readwrite) id connectedValue;
+@property (nonatomic, copy) void (^connectionBlock)(RKRelationshipConnectionOperation *operation, id connectedValue);
 
 // Helpers
 @property (weak, nonatomic, readonly) NSManagedObjectContext *managedObjectContext;
@@ -51,17 +70,18 @@ static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationsh
 
 @implementation RKRelationshipConnectionOperation
 
-
-- (id)initWithManagedObject:(NSManagedObject *)managedObject connectionMapping:(RKConnectionMapping *)connectionMapping managedObjectCache:(id<RKManagedObjectCaching>)managedObjectCache
+- (instancetype)initWithManagedObject:(NSManagedObject *)managedObject
+                           connection:(RKConnectionDescription *)connection
+                   managedObjectCache:(id<RKManagedObjectCaching>)managedObjectCache;
 {
     NSParameterAssert(managedObject);
     NSAssert([managedObject isKindOfClass:[NSManagedObject class]], @"Relationship connection requires an instance of NSManagedObject");
-    NSParameterAssert(connectionMapping);
+    NSParameterAssert(connection);
     NSParameterAssert(managedObjectCache);
     self = [self init];
     if (self) {
         self.managedObject = managedObject;
-        self.connectionMapping = connectionMapping;
+        self.connection = connection;
         self.managedObjectCache = managedObjectCache;
     }
 
@@ -73,23 +93,14 @@ static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationsh
     return self.managedObject.managedObjectContext;
 }
 
-- (NSManagedObject *)findOneConnectedWithSourceValue:(id)sourceValue
-{
-    NSAssert(self.managedObjectContext, @"Cannot lookup objects with a nil managedObjectContext");
-    return [self.managedObjectCache findInstanceOfEntity:self.connectionMapping.relationship.destinationEntity
-                                 withPrimaryKeyAttribute:self.connectionMapping.destinationKeyPath
-                                                   value:sourceValue
-                                  inManagedObjectContext:self.managedObjectContext];
-}
-
 - (id)relationshipValueWithConnectionResult:(id)result
 {
     // TODO: Replace with use of object mapping engine for type conversion
 
     // NOTE: This is a nasty hack to work around the fact that NSOrderedSet does not support key-value
     // collection operators. We try to detect and unpack a doubly wrapped collection
-    if ([self.connectionMapping.relationship isToMany] && RKObjectIsCollectionOfCollections(result)) {
-        id mutableSet = RKMutableSetValueForRelationship(self.connectionMapping.relationship);
+    if ([self.connection.relationship isToMany] && RKObjectIsCollectionOfCollections(result)) {
+        id mutableSet = RKMutableSetValueForRelationship(self.connection.relationship);
         for (id<NSFastEnumeration> enumerable in result) {
             for (id object in enumerable) {
                 [mutableSet addObject:object];
@@ -99,27 +110,27 @@ static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationsh
         return mutableSet;
     }
 
-    if ([self.connectionMapping.relationship isToMany]) {
+    if ([self.connection.relationship isToMany]) {
         if ([result isKindOfClass:[NSArray class]]) {
-            if ([self.connectionMapping.relationship isOrdered]) {
+            if ([self.connection.relationship isOrdered]) {
                 return [NSOrderedSet orderedSetWithArray:result];
             } else {
                 return [NSSet setWithArray:result];
             }
         } else if ([result isKindOfClass:[NSSet class]]) {
-            if ([self.connectionMapping.relationship isOrdered]) {
+            if ([self.connection.relationship isOrdered]) {
                 return [NSOrderedSet orderedSetWithSet:result];
             } else {
                 return result;
             }
         } else if ([result isKindOfClass:[NSOrderedSet class]]) {
-            if ([self.connectionMapping.relationship isOrdered]) {
+            if ([self.connection.relationship isOrdered]) {
                 return result;
             } else {
                 return [(NSOrderedSet *)result set];
             }
         } else {
-            if ([self.connectionMapping.relationship isOrdered]) {
+            if ([self.connection.relationship isOrdered]) {
                 return [NSOrderedSet orderedSetWithObject:result];
             } else {
                 return [NSSet setWithObject:result];
@@ -130,91 +141,63 @@ static id RKMutableSetValueForRelationship(NSRelationshipDescription *relationsh
     return result;
 }
 
-- (NSMutableSet *)findAllConnectedWithSourceValue:(id)sourceValue
+- (id)findConnected:(BOOL *)shouldConnectRelationship
 {
-    NSMutableSet *result = [NSMutableSet set];
-
-    id values = nil;
-    if ([sourceValue conformsToProtocol:@protocol(NSFastEnumeration)]) {
-        values = sourceValue;
-    } else {
-        values = [NSArray arrayWithObject:sourceValue];
-    }
-
-    for (id value in values) {
-        NSAssert(self.managedObjectContext, @"Cannot lookup objects with a nil managedObjectContext");
-        NSArray *objects = [self.managedObjectCache findInstancesOfEntity:self.connectionMapping.relationship.destinationEntity
-                                                  withPrimaryKeyAttribute:self.connectionMapping.destinationKeyPath
-                                                                    value:value
-                                                   inManagedObjectContext:self.managedObjectContext];
-        [result addObjectsFromArray:objects];
-    }
-    return result;
-}
-
-- (BOOL)isToMany
-{
-    return self.connectionMapping.relationship.isToMany;
-}
-
-- (BOOL)checkMatcher
-{
-    if (!self.connectionMapping.matcher) {
-        return YES;
-    } else {
-        return [self.connectionMapping.matcher matches:self.managedObject];
-    }
-}
-
-- (id)findConnected
-{
-    if ([self checkMatcher]) {
-        id connectionResult = nil;
-        if ([self.connectionMapping isForeignKeyConnection]) {
-            BOOL isToMany = [self isToMany];
-            id sourceValue = [self.managedObject valueForKey:self.connectionMapping.sourceKeyPath];
-            if (isToMany) {
-                connectionResult = [self findAllConnectedWithSourceValue:sourceValue];
-            } else {
-                connectionResult = [self findOneConnectedWithSourceValue:sourceValue];
-            }
-        } else if ([self.connectionMapping isKeyPathConnection]) {
-            connectionResult = [self.managedObject valueForKeyPath:self.connectionMapping.sourceKeyPath];
-        } else {
-            @throw [NSException exceptionWithName:NSInternalInconsistencyException
-                                           reason:[NSString stringWithFormat:@"%@ Attempted to establish a relationship using a mapping"
-                                                   "specifies neither a foreign key or a key path connection: %@",
-                                                   NSStringFromClass([self class]), self.connectionMapping]
-                                         userInfo:nil];
+    *shouldConnectRelationship = YES;
+    id connectionResult = nil;
+    if (self.connection.sourcePredicate && ![self.connection.sourcePredicate evaluateWithObject:self.managedObject]) return nil;
+    
+    if ([self.connection isForeignKeyConnection]) {
+        NSDictionary *attributeValues = RKConnectionAttributeValuesWithObject(self.connection, self.managedObject);
+        // If there are no attribute values available for connecting, skip the connection entirely
+        if (! attributeValues) {
+            *shouldConnectRelationship = NO;
+            return nil;
         }
-
-        return [self relationshipValueWithConnectionResult:connectionResult];
+        NSSet *managedObjects = [self.managedObjectCache managedObjectsWithEntity:[self.connection.relationship destinationEntity]
+                                                                  attributeValues:attributeValues
+                                                           inManagedObjectContext:self.managedObjectContext];
+        if (self.connection.destinationPredicate) managedObjects = [managedObjects filteredSetUsingPredicate:self.connection.destinationPredicate];
+        if (!self.connection.includesSubentities) managedObjects = [managedObjects filteredSetUsingPredicate:[NSPredicate predicateWithFormat:@"entity == %@", [self.connection.relationship destinationEntity]]];
+        if ([self.connection.relationship isToMany]) {
+            connectionResult = managedObjects;
+        } else {
+            if ([managedObjects count] > 1) RKLogWarning(@"Retrieved %ld objects satisfying connection criteria for one-to-one relationship connection: only object will be connected.", (long) [managedObjects count]);
+            if ([managedObjects count]) connectionResult = [managedObjects anyObject];
+        }
+    } else if ([self.connection isKeyPathConnection]) {
+        connectionResult = [self.managedObject valueForKeyPath:self.connection.keyPath];
     } else {
-        return nil;
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException
+                                       reason:[NSString stringWithFormat:@"%@ Attempted to establish a relationship using a mapping that"
+                                               " specifies neither a foreign key or a key path connection: %@",
+                                               NSStringFromClass([self class]), self.connection]
+                                     userInfo:nil];
     }
-}
 
-- (void)connectRelationship
-{
-    NSString *relationshipName = self.connectionMapping.relationship.name;
-    RKLogTrace(@"Connecting relationship '%@' with mapping: %@", relationshipName, self.connectionMapping);
-    [self.managedObjectContext performBlockAndWait:^{
-        self.connectedValue = [self findConnected];
-        [self.managedObject setValue:self.connectedValue forKeyPath:relationshipName];
-        RKLogDebug(@"Connected relationship '%@' to object '%@'", relationshipName, self.connectedValue);
-    }];
+    return [self relationshipValueWithConnectionResult:connectionResult];
 }
 
 - (void)main
 {
     if (self.isCancelled) return;
-    [self connectRelationship];
+    NSString *relationshipName = self.connection.relationship.name;
+    RKLogTrace(@"Connecting relationship '%@' with mapping: %@", relationshipName, self.connection);
+    [self.managedObjectContext performBlockAndWait:^{
+        BOOL shouldConnect = YES;
+        self.connectedValue = [self findConnected:&shouldConnect];
+        if (shouldConnect) {
+            [self.managedObject setValue:self.connectedValue forKeyPath:relationshipName];
+            RKLogDebug(@"Connected relationship '%@' to object '%@'", relationshipName, self.connectedValue);
+            if (self.connectionBlock) self.connectionBlock(self, self.connectedValue);
+        }
+    }];
 }
 
 - (NSString *)description
 {
     return [NSString stringWithFormat:@"<%@:%p %@ in %@ using %@>",
-            [self class], self, self.connectionMapping, self.managedObjectContext, self.managedObjectCache];
+            [self class], self, self.connection, self.managedObjectContext, self.managedObjectCache];
 }
 
 @end

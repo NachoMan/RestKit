@@ -28,6 +28,94 @@
 #import "RKManagedObjectCaching.h"
 #import "RKRelationshipConnectionOperation.h"
 #import "RKMappingErrors.h"
+#import "RKValueTransformers.h"
+#import "RKRelationshipMapping.h"
+#import "RKObjectUtilities.h"
+
+extern NSString * const RKObjectMappingNestingAttributeKeyName;
+
+id RKTransformedValueWithClass(id value, Class destinationType, NSValueTransformer *dateToStringValueTransformer);
+NSArray *RKApplyNestingAttributeValueToMappings(NSString *attributeName, id value, NSArray *propertyMappings);
+
+// Return YES if the entity is identified by an attribute that acts as the nesting key in the source representation
+static BOOL RKEntityMappingIsIdentifiedByNestingAttribute(RKEntityMapping *entityMapping)
+{
+    for (NSAttributeDescription *attribute in [entityMapping identificationAttributes]) {
+        RKAttributeMapping *attributeMapping = [[entityMapping propertyMappingsByDestinationKeyPath] objectForKey:[attribute name]];
+        if ([attributeMapping.sourceKeyPath isEqualToString:RKObjectMappingNestingAttributeKeyName]) {
+            return YES;
+        }
+    }
+    
+    return NO;
+}
+
+// We always need to map the dynamic nesting attribute first so that sub-key attribute mappings apply cleanly
+static NSArray *RKEntityIdentificationAttributesInMappingOrder(RKEntityMapping *entityMapping)
+{
+    NSMutableArray *orderedAttributes = [NSMutableArray arrayWithCapacity:[[entityMapping identificationAttributes] count]];
+    for (NSAttributeDescription *attribute in [entityMapping identificationAttributes]) {
+        RKAttributeMapping *attributeMapping = [[entityMapping propertyMappingsByDestinationKeyPath] objectForKey:[attribute name]];
+        if ([attributeMapping.sourceKeyPath isEqualToString:RKObjectMappingNestingAttributeKeyName]) {
+            // We want to map the nesting attribute first
+            [orderedAttributes insertObject:attribute atIndex:0];
+        } else {
+            [orderedAttributes addObject:attribute];
+        }
+    }
+    
+    return orderedAttributes;
+}
+
+static id RKValueForAttributeMappingInRepresentation(RKAttributeMapping *attributeMapping, NSDictionary *representation)
+{
+    if ([attributeMapping.sourceKeyPath isEqualToString:RKObjectMappingNestingAttributeKeyName]) {
+        return [[representation allKeys] lastObject];
+    } else {
+        return [representation valueForKeyPath:attributeMapping.sourceKeyPath];
+    }
+}
+
+static RKAttributeMapping *RKAttributeMappingForNameInMappings(NSString *name, NSArray *attributeMappings)
+{
+    for (RKAttributeMapping *attributeMapping in attributeMappings) {
+        if ([[attributeMapping destinationKeyPath] isEqualToString:name]) return attributeMapping;
+    }
+    
+    return nil;
+}
+
+/**
+ This function is the workhorse for extracting entity identifier attributes from a dictionary representation. It supports type transformations, compound entity identifier attributes, and dynamic nesting keys within the representation. 
+ */
+static NSDictionary *RKEntityIdentificationAttributesForEntityMappingWithRepresentation(RKEntityMapping *entityMapping, NSDictionary *representation)
+{
+    RKDateToStringValueTransformer *dateToStringTransformer = [[RKDateToStringValueTransformer alloc] initWithDateToStringFormatter:entityMapping.preferredDateFormatter
+                                                                                                             stringToDateFormatters:entityMapping.dateFormatters];
+    NSArray *orderedAttributes = RKEntityIdentificationAttributesInMappingOrder(entityMapping);
+    BOOL containsNestingAttribute = RKEntityMappingIsIdentifiedByNestingAttribute(entityMapping);
+    __block NSArray *attributeMappings = entityMapping.attributeMappings;
+    if (containsNestingAttribute) RKLogDebug(@"Detected use of nested dictionary key as identifying attribute");
+
+    NSMutableDictionary *entityIdentifierAttributes = [NSMutableDictionary dictionaryWithCapacity:[orderedAttributes count]];
+    [orderedAttributes enumerateObjectsUsingBlock:^(NSAttributeDescription *attribute, NSUInteger idx, BOOL *stop) {
+        RKAttributeMapping *attributeMapping = RKAttributeMappingForNameInMappings([attribute name], attributeMappings);
+        Class attributeClass = [entityMapping classForProperty:[attribute name]];
+        id attributeValue = nil;
+        if (containsNestingAttribute && idx == 0) {
+            // This is the nesting attribute
+            attributeValue = RKTransformedValueWithClass([[representation allKeys] lastObject], attributeClass, dateToStringTransformer);
+            attributeMappings = RKApplyNestingAttributeValueToMappings([attribute name], attributeValue, attributeMappings);
+        } else {
+            id sourceValue = RKValueForAttributeMappingInRepresentation(attributeMapping, representation);
+            attributeValue = RKTransformedValueWithClass(sourceValue, attributeClass, dateToStringTransformer);
+        }
+        
+        [entityIdentifierAttributes setObject:attributeValue ?: [NSNull null] forKey:[attribute name]];
+    }];
+    
+    return entityIdentifierAttributes;
+}
 
 // Set Logging Component
 #undef RKLogComponent
@@ -42,7 +130,7 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
 
 @implementation RKManagedObjectMappingOperationDataSource
 
-- (id)initWithManagedObjectContext:(NSManagedObjectContext *)managedObjectContext cache:(id<RKManagedObjectCaching>)managedObjectCache
+- (instancetype)initWithManagedObjectContext:(NSManagedObjectContext *)managedObjectContext cache:(id<RKManagedObjectCaching>)managedObjectCache
 {
     NSParameterAssert(managedObjectContext);
 
@@ -50,9 +138,19 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
     if (self) {
         self.managedObjectContext = managedObjectContext;
         self.managedObjectCache = managedObjectCache;
+        
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(updateCacheWithChangesFromContextWillSaveNotification:)
+                                                     name:NSManagedObjectContextWillSaveNotification
+                                                   object:managedObjectContext];
     }
 
     return self;
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (id)mappingOperation:(RKMappingOperation *)mappingOperation targetObjectForRepresentation:(NSDictionary *)representation withMapping:(RKObjectMapping *)mapping
@@ -64,69 +162,41 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
         return [mapping.objectClass new];
     }
 
-    RKEntityMapping *entityMapping = (RKEntityMapping *)mapping;
-    id object = nil;
-    id primaryKeyValue = nil;
-    NSString *primaryKeyAttribute;
-
-    NSEntityDescription *entity = [entityMapping entity];
-    RKAttributeMapping *primaryKeyAttributeMapping = nil;
-
-    primaryKeyAttribute = [entityMapping primaryKeyAttribute];
-    if (primaryKeyAttribute) {
-        // If a primary key has been set on the object mapping, find the attribute mapping
-        // so that we can extract any existing primary key from the mappable data
-        for (RKAttributeMapping *attributeMapping in entityMapping.attributeMappings) {
-            if ([attributeMapping.destinationKeyPath isEqualToString:primaryKeyAttribute]) {
-                primaryKeyAttributeMapping = attributeMapping;
-                break;
-            }
-        }
-
-        // Get the primary key value out of the mappable data (if any)
-        if ([primaryKeyAttributeMapping.sourceKeyPath isEqualToString:RKObjectMappingNestingAttributeKeyName]) {
-            RKLogDebug(@"Detected use of nested dictionary key as primaryKey attribute...");
-            primaryKeyValue = [[representation allKeys] lastObject];
-        } else {
-            NSString* keyPathForPrimaryKeyElement = primaryKeyAttributeMapping.sourceKeyPath;
-            if (keyPathForPrimaryKeyElement) {
-                primaryKeyValue = [representation valueForKeyPath:keyPathForPrimaryKeyElement];
-            } else {
-                RKLogWarning(@"Unable to find source attribute for primaryKeyAttribute '%@': unable to find existing object instances by primary key.", primaryKeyAttribute);
-            }
-        }
-    }
-
+    RKEntityMapping *entityMapping = (RKEntityMapping *)mapping;    
+    NSDictionary *entityIdentifierAttributes = RKEntityIdentificationAttributesForEntityMappingWithRepresentation(entityMapping, representation);
     if (! self.managedObjectCache) {
         RKLogWarning(@"Performing managed object mapping with a nil managed object cache:\n"
-                      "Unable to update existing object instances by primary key. Duplicate objects may be created.");
+                      "Unable to update existing object instances by identification attributes. Duplicate objects may be created.");
     }
 
-    // If we have found the primary key attribute & value, try to find an existing instance to update
-    if (primaryKeyAttribute && primaryKeyValue && NO == [primaryKeyValue isEqual:[NSNull null]]) {
-        object = [self.managedObjectCache findInstanceOfEntity:entity
-                                       withPrimaryKeyAttribute:primaryKeyAttribute
-                                                         value:primaryKeyValue
-                                        inManagedObjectContext:self.managedObjectContext];
-
-        if (object && [self.managedObjectCache respondsToSelector:@selector(didFetchObject:)]) {
-            [self.managedObjectCache didFetchObject:object];
+    // If we have found the entity identifier attributes, try to find an existing instance to update
+    NSEntityDescription *entity = [entityMapping entity];
+    NSManagedObject *managedObject = nil;
+    if ([entityIdentifierAttributes count]) {
+        NSSet *objects = [self.managedObjectCache managedObjectsWithEntity:entity
+                                                           attributeValues:entityIdentifierAttributes
+                                                    inManagedObjectContext:self.managedObjectContext];
+        if (entityMapping.identificationPredicate) objects = [objects filteredSetUsingPredicate:entityMapping.identificationPredicate];
+        if ([objects count] > 0) {
+            managedObject = [objects anyObject];
+            if ([objects count] > 1) RKLogWarning(@"Managed object cache returned %ld objects for the identifier configured for the '%@' entity, expected 1.", (long) [objects count], [entity name]);
+        }
+        if (managedObject && [self.managedObjectCache respondsToSelector:@selector(didFetchObject:)]) {
+            [self.managedObjectCache didFetchObject:managedObject];
         }
     }
 
-    if (object == nil) {
-        object = [[NSManagedObject alloc] initWithEntity:entity
+    if (managedObject == nil) {
+        managedObject = [[NSManagedObject alloc] initWithEntity:entity
                            insertIntoManagedObjectContext:self.managedObjectContext];
-        if (primaryKeyAttribute && primaryKeyValue && ![primaryKeyValue isEqual:[NSNull null]]) {
-            [object setValue:primaryKeyValue forKey:primaryKeyAttribute];
-        }
+        [managedObject setValuesForKeysWithDictionary:entityIdentifierAttributes];
 
         if ([self.managedObjectCache respondsToSelector:@selector(didCreateObject:)]) {
-            [self.managedObjectCache didCreateObject:object];
+            [self.managedObjectCache didCreateObject:managedObject];
         }
     }
 
-    return object;
+    return managedObject;
 }
 
 // Mapping operations should be executed against managed object contexts with the `NSPrivateQueueConcurrencyType` concurrency type
@@ -150,27 +220,24 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
     if ([mappingOperation.objectMapping isKindOfClass:[RKEntityMapping class]]) {
         [self emitDeadlockWarningIfNecessary];
         
-        NSArray *connectionMappings = [(RKEntityMapping *)mappingOperation.objectMapping connectionMappings];
-        if ([connectionMappings count] > 0 && self.managedObjectCache == nil) {
+        NSArray *connections = [(RKEntityMapping *)mappingOperation.objectMapping connections];
+        if ([connections count] > 0 && self.managedObjectCache == nil) {
             NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Cannot map an entity mapping that contains connection mappings with a data source whose managed object cache is nil." };
             NSError *localError = [NSError errorWithDomain:RKErrorDomain code:RKMappingErrorNilManagedObjectCache userInfo:userInfo];
             if (error) *error = localError;
             return NO;
         }
 
-        for (RKConnectionMapping *connectionMapping in connectionMappings) {
-            RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject
-                                                                                                          connectionMapping:connectionMapping
-                                                                                                         managedObjectCache:self.managedObjectCache];
-            __weak RKRelationshipConnectionOperation *weakOperation = operation;
-            [operation setCompletionBlock:^{
-                if (weakOperation.connectedValue) {
-                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didConnectRelationship:withValue:usingMapping:)]) {
-                        [mappingOperation.delegate mappingOperation:mappingOperation didConnectRelationship:connectionMapping.relationship withValue:weakOperation.connectedValue usingMapping:connectionMapping];
+        for (RKConnectionDescription *connection in connections) {
+            RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:mappingOperation.destinationObject connection:connection managedObjectCache:self.managedObjectCache];
+            [operation setConnectionBlock:^(RKRelationshipConnectionOperation *operation, id connectedValue) {
+                if (connectedValue) {
+                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didConnectRelationship:toValue:usingConnection:)]) {
+                        [mappingOperation.delegate mappingOperation:mappingOperation didConnectRelationship:connection.relationship toValue:connectedValue usingConnection:connection];
                     }
                 } else {
-                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didFailToConnectRelationship:usingMapping:)]) {
-                        [mappingOperation.delegate mappingOperation:mappingOperation didFailToConnectRelationship:connectionMapping.relationship usingMapping:connectionMapping];
+                    if ([mappingOperation.delegate respondsToSelector:@selector(mappingOperation:didFailToConnectRelationship:usingConnection:)]) {
+                        [mappingOperation.delegate mappingOperation:mappingOperation didFailToConnectRelationship:connection.relationship usingConnection:connection];
                     }
                 }
             }];
@@ -178,6 +245,63 @@ extern NSString * const RKObjectMappingNestingAttributeKeyName;
             NSOperationQueue *operationQueue = self.operationQueue ?: [NSOperationQueue currentQueue];
             [operationQueue addOperation:operation];
             RKLogTrace(@"Enqueued %@ dependent upon parent operation %@ to operation queue %@", operation, self.parentOperation, operationQueue);
+        }
+    }
+    
+    return YES;
+}
+
+// NOTE: In theory we should be able to use the userInfo dictionary, but the dictionary was coming in empty (12/18/2012)
+- (void)updateCacheWithChangesFromContextWillSaveNotification:(NSNotification *)notification
+{
+    NSSet *objectsToAdd = [[self.managedObjectContext insertedObjects] setByAddingObjectsFromSet:[self.managedObjectContext updatedObjects]];
+    
+    __block BOOL success;
+    __block NSError *error = nil;
+    [self.managedObjectContext performBlockAndWait:^{
+        success = [self.managedObjectContext obtainPermanentIDsForObjects:[objectsToAdd allObjects] error:&error];
+    }];
+    
+    if (! success) {
+        RKLogWarning(@"Failed obtaining permanent managed object ID's for %ld objects: the managed object cache was not updated and duplicate objects may be created.", (long) [objectsToAdd count]);
+        RKLogError(@"Obtaining permanent managed object IDs failed with error: %@", error);
+        return;
+    }
+    
+    // Update the cache
+    if ([self.managedObjectCache respondsToSelector:@selector(didFetchObject:)]) {
+        for (NSManagedObject *managedObject in objectsToAdd) {
+            [self.managedObjectCache didFetchObject:managedObject];
+        }
+    }
+    
+    if ([self.managedObjectCache respondsToSelector:@selector(didDeleteObject::)]) {
+        for (NSManagedObject *managedObject in [self.managedObjectContext deletedObjects]) {
+            [self.managedObjectCache didDeleteObject:managedObject];
+        }
+    }
+}
+
+- (BOOL)mappingOperation:(RKMappingOperation *)mappingOperation deleteExistingValueOfRelationshipWithMapping:(RKRelationshipMapping *)relationshipMapping error:(NSError **)error
+{
+    // Validate the assignment policy
+    if (! relationshipMapping.assignmentPolicy == RKReplaceAssignmentPolicy) {
+        NSDictionary *userInfo = @{ NSLocalizedDescriptionKey: @"Unable to satisfy deletion request: Relationship mapping was expected to have an assignment policy of `RKReplaceAssignmentPolicy`, but did not." };
+        NSError *localError = [NSError errorWithDomain:RKErrorDomain code:RKMappingErrorInvalidAssignmentPolicy userInfo:userInfo];
+        if (error) *error = localError;
+        return NO;
+    }
+    
+    // Delete any managed objects at the destination key path from the context
+    id existingValue = [mappingOperation.destinationObject valueForKeyPath:relationshipMapping.destinationKeyPath];
+    if ([existingValue isKindOfClass:[NSManagedObject class]]) {
+        [self.managedObjectContext deleteObject:existingValue];
+    } else {
+        if (RKObjectIsCollection(existingValue)) {
+            for (NSManagedObject *managedObject in existingValue) {
+                if (! [managedObject isKindOfClass:[NSManagedObject class]]) continue;
+                [self.managedObjectContext deleteObject:managedObject];
+            }
         }
     }
     
